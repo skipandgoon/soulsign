@@ -892,134 +892,102 @@
         padding-inline: 14px;
       }
     }
-  .cloud {
-        width: 100%;
-        margin: 0 auto 12px;
-        background: var(--card);
-        border: 1px solid var(--line);
-        border-radius: 4px;
-        padding: 12px 14px;
-      }
+    .col-select {
+      width: 34px;
+      text-align: center;
+    }
 
-      .cloud-head {
-        display: flex;
-        align-items: baseline;
-        gap: 10px;
-        margin-bottom: 10px;
-      }
+    .col-select input {
+      width: 15px;
+      height: 15px;
+      cursor: pointer;
+    }
 
-      .cloud-hint {
-        color: var(--muted);
-        font-size: 12px;
-      }
+    .batch-info {
+      color: var(--muted);
+      font-size: 12px;
+    }
 
-      .cloud-form {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px 12px;
-        align-items: flex-end;
-        margin-bottom: 10px;
-      }
+    tr.dragging {
+      opacity: 0.4;
+    }
 
-      .cloud-form label {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-        font-size: 12px;
-        color: var(--muted);
-      }
+    tr.drop-target td {
+      border-top: 2px solid var(--brand);
+    }
 
-      .cloud-form input {
-        min-width: 180px;
-        height: 30px;
-        padding: 0 8px;
-        border: 1px solid var(--line);
-        border-radius: 3px;
-        background: #fff;
-        color: var(--text);
-        font: 13px/1.2 "Microsoft YaHei", "Segoe UI", sans-serif;
-      }
+    #scripts tbody tr[data-task-key] {
+      cursor: grab;
+    }
 
-      .cloud-actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        align-items: center;
-        padding-top: 8px;
-        border-top: 1px dashed var(--line);
-      }
+    .repo-note {
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 12px;
+    }
 
-      .cloud-status {
-        color: var(--muted);
-        font-size: 12px;
-      }
+    .repo-note a {
+      color: var(--brand);
+      text-decoration: underline;
+    }
 
-      .cloud-status.err {
-        color: #c0392b;
-      }
+    .repo-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
 
-      .cloud-list:not(:empty) {
-        margin-top: 10px;
-        border-top: 1px dashed var(--line);
-      }
+    .repo-tag {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: #fafafa;
+      min-width: 260px;
+    }
 
-      .cloud-item {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        padding: 8px 0;
-        border-bottom: 1px solid #f0f0f0;
-      }
+    .repo-tag-name {
+      font-weight: 600;
+    }
 
-      .cloud-item:last-child {
-        border-bottom: 0;
-      }
+    .repo-tag-ver {
+      color: var(--muted);
+      font-weight: 400;
+      font-size: 12px;
+    }
 
-      .cloud-item-name {
-        font-weight: 600;
-      }
+    .repo-tag-meta {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 3px;
+    }
 
-      .cloud-item-ver {
-        color: var(--muted);
-        font-weight: 400;
-        font-size: 12px;
-      }
+    .repo-tag-act {
+      margin-left: auto;
+    }
 
-      .cloud-item-desc {
-        color: var(--muted);
-        font-size: 12px;
-        margin-top: 2px;
-      }
+    .repo-loading,
+    .repo-error {
+      color: var(--muted);
+      font-size: 13px;
+      padding: 8px 0;
+    }
 
-      .cloud-item-side {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        white-space: nowrap;
-      }
-
-      .cloud-item-status {
-        color: var(--muted);
-        font-size: 12px;
-      }
-
-      .cloud-empty {
-        color: var(--muted);
-        font-size: 12px;
-        padding-top: 10px;
-      }
-    </style>
+    .repo-error {
+      color: #c0392b;
+    }
+  </style>
   </head>
 <body>
   <header class="topbar">
-    <div class="brand">魂签 <small id="app-version">2.7.1</small></div>
+    <div class="brand">魂签 <small id="app-version">2.8.0</small></div>
     <nav class="nav">
       <button id="nav-config" type="button">跨域管理</button>
       <a href="#scripts">脚本管理</a>
-      <a href="#cloud">我的脚本库</a>
-      <a href="https://github.com/skipandgoon/soulsign-scripts" target="_blank" rel="noreferrer">脚本仓库</a>
-      <a href="https://github.com/inu1255/soulsign-chrome" target="_blank" rel="noreferrer">源码</a>
+      <button id="nav-repo" type="button">脚本仓库</button>
+      <a href="https://github.com/skipandgoon/soulsign" target="_blank" rel="noreferrer">源码</a>
     </nav>
   </header>
 
@@ -1030,40 +998,18 @@
       <button class="btn" id="clear-count">清空计数</button>
       <button class="btn" id="add-script">添加脚本</button>
       <button class="btn" id="record-script">录制脚本</button>
+      <button class="btn light" id="batch-enable">批量启用</button>
+      <button class="btn light" id="batch-disable">批量停用</button>
+      <button class="btn light" id="batch-delete">批量删除</button>
+      <span class="batch-info" id="batch-info"></span>
       <input id="file-input" class="hidden" type="file" accept=".js,.json,.txt,.soulsign">
-    </section>
-
-    <section class="cloud" id="cloud">
-      <div class="cloud-head">
-        <strong>我的脚本库 / 云端同步</strong>
-        <span class="cloud-hint">公开仓库可直接读取、不用填 PAT；只有上传/恢复才需要 PAT（只存本地）</span>
-      </div>
-      <div class="cloud-form">
-        <label>仓库
-          <input id="cloud-repo" type="text" placeholder="owner/repo" spellcheck="false">
-        </label>
-        <label>分支
-          <input id="cloud-branch" type="text" placeholder="main" spellcheck="false">
-        </label>
-        <label>PAT
-          <input id="cloud-token" type="password" placeholder="github_pat_...（只存本地）" spellcheck="false">
-        </label>
-        <button class="btn" id="cloud-save" type="button">保存</button>
-        <button class="btn ghost" id="cloud-clear" type="button">清除凭据</button>
-      </div>
-      <div class="cloud-actions">
-        <button class="btn" id="cloud-load" type="button">读取脚本库</button>
-        <button class="btn light" id="cloud-upload" type="button">上传到云端</button>
-        <button class="btn light" id="cloud-restore" type="button">从云端恢复</button>
-        <span class="cloud-status" id="cloud-status"></span>
-      </div>
-      <div class="cloud-list" id="cloud-list"></div>
     </section>
 
     <section class="board" id="scripts">
       <table>
         <thead>
           <tr>
+            <th class="col-select"><input type="checkbox" id="select-all" title="全选"></th>
             <th class="col-author">作者</th>
             <th class="col-name">脚本名</th>
             <th class="col-version">版本</th>
@@ -1100,6 +1046,22 @@
         <button class="btn light" id="debug-run" type="button">&#35843;&#35797;RUN</button>
         <button class="btn ghost" id="cancel-editor" type="button">&#21462;&#28040;</button>
         <button class="btn" id="save-script" type="button">&#20445;&#23384;&#33050;&#26412;</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="overlay" id="repo-overlay">
+    <div class="modal">
+      <div class="modal-head">
+        <div class="modal-title">脚本仓库</div>
+        <button class="icon-btn" id="close-repo" type="button">&#10005;</button>
+      </div>
+      <div class="modal-body">
+        <div class="repo-note">来自 <a href="https://github.com/skipandgoon/soulsign-scripts" target="_blank" rel="noreferrer">skipandgoon/soulsign-scripts</a></div>
+        <div class="repo-tags" id="repo-tags"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn ghost" id="cancel-repo" type="button">关闭</button>
       </div>
     </div>
   </section>

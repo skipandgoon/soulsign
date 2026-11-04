@@ -45,6 +45,9 @@ exports.check = async function(param) {
 
   const state = {
     tasks: [],
+    selected: new Set(),
+    order: [],
+    repoManifest: null,
     taskRowMap: new Map(),
     paramsTaskKey: "",
     editorTaskKey: "",
@@ -356,6 +359,7 @@ exports.check = async function(param) {
     const online = onlineStatus(task);
     const rate = taskRateText(task);
     return `
+      <td class="col-select"><input type="checkbox" data-action="select" data-key="${escapeHtml(key)}" ${state.selected.has(key) ? "checked" : ""}></td>
       <td class="col-author">${escapeHtml(task.author || "-")}</td>
       <td class="name-cell col-name">${
         link
@@ -922,6 +926,7 @@ exports.check = async function(param) {
   async function loadConfig() {
     const config = await send(MESSAGE_PATHS.configGet);
     applyCrossConfig(config);
+    state.order = Array.isArray(config.order) ? config.order.filter((key) => typeof key === "string") : [];
   }
 
   async function saveConfig() {
@@ -952,18 +957,31 @@ exports.check = async function(param) {
 
   function renderTasks() {
     emptyState.classList.toggle("hidden", state.tasks.length > 0);
+    const orderIndex = new Map((state.order || []).map((key, index) => [key, index]));
+    const sorted = state.tasks.slice().sort((left, right) => {
+      const lk = taskKey(left);
+      const rk = taskKey(right);
+      const li = orderIndex.has(lk) ? orderIndex.get(lk) : Number.MAX_SAFE_INTEGER;
+      const ri = orderIndex.has(rk) ? orderIndex.get(rk) : Number.MAX_SAFE_INTEGER;
+      return li - ri;
+    });
     const nextRows = new Map();
     const fragment = document.createDocumentFragment();
-    state.tasks.forEach((task) => {
+    sorted.forEach((task) => {
       const key = taskKey(task);
       const tr = state.taskRowMap.get(key) || document.createElement("tr");
       tr.dataset.taskKey = key;
+      tr.draggable = true;
       tr.innerHTML = renderTaskRow(task, key);
       nextRows.set(key, tr);
       fragment.appendChild(tr);
     });
     taskBody.replaceChildren(fragment);
     state.taskRowMap = nextRows;
+    for (const key of Array.from(state.selected)) {
+      if (!nextRows.has(key)) state.selected.delete(key);
+    }
+    syncSelectionBoxes();
   }
 
   async function refresh() {
@@ -1256,22 +1274,24 @@ exports.check = async function(param) {
   document.getElementById("import-script").addEventListener("click", () => fileInput.click());
   bindAsyncClick("export-script", exportScripts);
   bindAsyncClick("clear-count", clearCount);
-  // 我的脚本库 / 云端同步
-    bindAsyncClick("cloud-save", cloudSaveSettings);
-    bindAsyncClick("cloud-clear", cloudClearSettings);
-    bindAsyncClick("cloud-load", () => cloudGuard(cloudLoadRepo));
-    bindAsyncClick("cloud-upload", () => cloudGuard(cloudUpload));
-    bindAsyncClick("cloud-restore", () => cloudGuard(cloudRestore));
-    const cloudListEl = document.getElementById("cloud-list");
-    if (cloudListEl) {
-      cloudListEl.addEventListener("click", (event) => {
-        const button = event.target.closest("[data-act='install']");
-        if (!button) return;
-        const scripts = (state.cloudManifest && state.cloudManifest.scripts) || [];
-        const item = scripts.find((row) => String(row.id) === String(button.dataset.id));
-        cloudGuard(() => cloudInstall(item));
-      });
-    }
+  // 脚本仓库 / 批量操作 / 拖动排序
+  bindAsyncClick("nav-repo", async () => openRepo());
+  bindAsyncClick("batch-enable", () => batchSetEnabled(true));
+  bindAsyncClick("batch-disable", () => batchSetEnabled(false));
+  bindAsyncClick("batch-delete", batchDelete);
+  document.getElementById("close-repo").addEventListener("click", closeRepo);
+  document.getElementById("cancel-repo").addEventListener("click", closeRepo);
+  document.getElementById("repo-overlay").addEventListener("click", (event) => {
+    if (event.target.id === "repo-overlay") closeRepo();
+  });
+  document.getElementById("repo-tags").addEventListener("click", (event) => {
+    const button = event.target.closest(".repo-tag-act");
+    if (!button) return;
+    const scripts = (state.repoManifest && state.repoManifest.scripts) || [];
+    const item = scripts.find((row) => String(row.id) === String(button.dataset.id));
+    installRepoScript(item).catch(reportError);
+  });
+  bindSelectionAndDrag();
   bindAsyncClick("save-script", saveScript);
   document.getElementById("debug-params").addEventListener("click", openDebugParams);
   bindAsyncClick("debug-check", () => debugTask("check"));
@@ -1435,116 +1455,13 @@ exports.check = async function(param) {
     }
   });
 
-  // ===== 我的脚本库 / 云端同步（私有仓库，个人自用）=====
-  // 仓库结构：manifest.json（脚本索引）+ scripts/*.js + sync/sync.json（同步快照，含参数）
-  // 凭据只存 chrome.storage.local，不进代码、不上报。
-  const CLOUD_KEYS = { repo: "cloud.repo", branch: "cloud.branch", token: "cloud.token" };
-  const CLOUD_DEFAULT_REPO = "skipandgoon/soulsign-scripts";
-  const CLOUD_DEFAULT_BRANCH = "main";
-  const CLOUD_SYNC_PATH = "sync/sync.json";
+  // ===== 脚本仓库（公开仓库 manifest → 标签展示 → 一键导入安装）=====
+  const REPO_OWNER = "skipandgoon";
+  const REPO_NAME = "soulsign-scripts";
+  const REPO_BRANCH = "main";
 
-  function cloudEl(id) {
-    return document.getElementById(id);
-  }
-
-  function storageGet(keys) {
-    return new Promise((resolve) => chrome.storage.local.get(keys, (value) => resolve(value || {})));
-  }
-
-  function storageSet(value) {
-    return new Promise((resolve) => chrome.storage.local.set(value, resolve));
-  }
-
-  async function cloudSettings() {
-    const saved = await storageGet([CLOUD_KEYS.repo, CLOUD_KEYS.branch, CLOUD_KEYS.token]);
-    return {
-      repo: String(saved[CLOUD_KEYS.repo] || "").trim(),
-      branch: String(saved[CLOUD_KEYS.branch] || CLOUD_DEFAULT_BRANCH).trim() || CLOUD_DEFAULT_BRANCH,
-      token: String(saved[CLOUD_KEYS.token] || "").trim(),
-    };
-  }
-
-  function setCloudStatus(text, isError) {
-    const el = cloudEl("cloud-status");
-    if (!el) return;
-    el.textContent = String(text || "");
-    el.classList.toggle("err", !!isError);
-  }
-
-  function toBase64(text) {
-    const bytes = new TextEncoder().encode(String(text));
-    let binary = "";
-    for (let i = 0; i < bytes.length; i += 0x8000) {
-      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-    }
-    return btoa(binary);
-  }
-
-  function fromBase64(content) {
-    const clean = String(content || "").replace(/\s/g, "");
-    const binary = atob(clean);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    return new TextDecoder().decode(bytes);
-  }
-
-  // 读写 GitHub Contents API：public 仓库可免 token 读；写操作（上传/恢复）必须带 token
-  async function ghRequest(path, options) {
-    const settings = await cloudSettings();
-    if (!settings.repo) throw new Error("先填仓库（owner/repo）");
-    const opts = options || {};
-    const isWrite = opts.method === "PUT";
-    if (isWrite && !settings.token) throw new Error("上传/恢复需要 PAT（读取公开仓库不需要）");
-    const url = `https://api.github.com/repos/${settings.repo}/contents/${path}`;
-    const target = isWrite ? url : `${url}?ref=${encodeURIComponent(settings.branch)}`;
-    const headers = {
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-    };
-    if (settings.token) headers.Authorization = `Bearer ${settings.token}`;
-    if (opts.body) headers["Content-Type"] = "application/json";
-    const resp = await fetch(target, {
-      method: opts.method || "GET",
-      headers,
-      body: opts.body ? JSON.stringify(opts.body) : undefined,
-    });
-    if (resp.status === 404) return null;
-    if (!resp.ok) {
-      const detail = String(await resp.text()).slice(0, 160);
-      throw new Error(`GitHub ${resp.status}: ${detail}`);
-    }
-    return resp.json();
-  }
-
-  // 读文件：public 仓库直接走 raw（不需要 token）；private 仓库用 Contents API + token
-  async function ghReadText(path) {
-    const settings = await cloudSettings();
-    if (!settings.repo) throw new Error("先填仓库（owner/repo）");
-    if (!settings.token) {
-      const seg = String(path).split("/").map((part) => encodeURIComponent(part)).join("/");
-      const resp = await fetch(
-        `https://raw.githubusercontent.com/${settings.repo}/${settings.branch}/${seg}?t=${Date.now()}`
-      );
-      if (!resp.ok) throw new Error(`读取失败 ${resp.status}（仓库 / 分支 / 路径对不上？）`);
-      return resp.text();
-    }
-    const data = await ghRequest(path);
-    if (!data) throw new Error(`仓库里没有 ${path}`);
-    return fromBase64(data.content);
-  }
-
-  async function ghWrite(path, text, message) {
-    const settings = await cloudSettings();
-    let sha = null;
-    try {
-      const current = await ghRequest(path);
-      if (current) sha = current.sha;
-    } catch (error) {
-      sha = null;
-    }
-    const body = { message, content: toBase64(text), branch: settings.branch };
-    if (sha) body.sha = sha;
-    return ghRequest(path, { method: "PUT", body });
+  function repoRawUrl(path) {
+    return `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${REPO_BRANCH}/${path}?t=${Date.now()}`;
   }
 
   function compareVersions(left, right) {
@@ -1558,57 +1475,73 @@ exports.check = async function(param) {
     return 0;
   }
 
-  function findInstalledTask(item) {
-    return (state.tasks || []).find(
-      (task) => String(task.author || "") === String(item.author || "") && String(task.name || "") === String(item.name || "")
-    );
+  async function fetchRepoManifest() {
+    const resp = await fetch(repoRawUrl("manifest.json"));
+    if (!resp.ok) throw new Error(`仓库读取失败 ${resp.status}`);
+    const data = await resp.json();
+    if (!Array.isArray(data.scripts)) throw new Error("manifest.json 格式不对");
+    return data;
   }
 
-  function renderCloudList() {
-    const box = cloudEl("cloud-list");
+  function openRepo() {
+    const overlay = document.getElementById("repo-overlay");
+    if (overlay) overlay.classList.add("open");
+    renderRepoTags();
+    fetchRepoManifest()
+      .then((data) => {
+        state.repoManifest = data;
+        renderRepoTags();
+      })
+      .catch((error) => {
+        const box = document.getElementById("repo-tags");
+        if (box) {
+          box.innerHTML = `<div class="repo-error">${escapeHtml(String((error && error.message) || error))}</div>`;
+        }
+      });
+  }
+
+  function closeRepo() {
+    const overlay = document.getElementById("repo-overlay");
+    if (overlay) overlay.classList.remove("open");
+  }
+
+  function renderRepoTags() {
+    const box = document.getElementById("repo-tags");
     if (!box) return;
-    const manifest = state.cloudManifest;
-    if (!manifest || !Array.isArray(manifest.scripts) || !manifest.scripts.length) {
-      box.innerHTML = '<div class="cloud-empty">还没有读取脚本库</div>';
+    const data = state.repoManifest;
+    if (!data) {
+      box.innerHTML = '<div class="repo-loading">读取中…</div>';
       return;
     }
-    box.innerHTML = manifest.scripts
+    const scripts = data.scripts || [];
+    if (!scripts.length) {
+      box.innerHTML = '<div class="repo-loading">仓库里还没有脚本</div>';
+      return;
+    }
+    box.innerHTML = scripts
       .map((item) => {
-        const installed = findInstalledTask(item);
-        const localVersion = installed ? String(installed.version || "0") : "";
-        const newer = installed ? compareVersions(item.version, localVersion) > 0 : false;
-        const statusText = installed ? (newer ? `可更新 ${localVersion} → ${item.version}` : `已装 ${localVersion}`) : "未安装";
-        const action = installed
-          ? `<button class="btn ${newer ? "light" : "ghost"} cloud-act" type="button" data-act="install" data-id="${escapeHtml(
-              item.id
-            )}">${newer ? "更新" : "重装"}</button>`
-          : `<button class="btn cloud-act" type="button" data-act="install" data-id="${escapeHtml(item.id)}">安装</button>`;
-        return `<div class="cloud-item">
-          <div class="cloud-item-main">
-            <div class="cloud-item-name">${escapeHtml(item.name)} <span class="cloud-item-ver">v${escapeHtml(item.version)}</span></div>
-            <div class="cloud-item-desc">${escapeHtml(item.desc || "")} · ${escapeHtml(item.domain || "")} · ${escapeHtml(item.author || "")}</div>
+        const installed = findTaskByKey(`${item.author || ""}/${item.name || ""}`);
+        const newer = installed ? compareVersions(item.version, installed.version) > 0 : false;
+        const label = !installed ? "安装" : newer ? "更新" : "重装";
+        const cls = !installed ? "btn" : newer ? "btn light" : "btn ghost";
+        return `<div class="repo-tag">
+          <div class="repo-tag-main">
+            <div class="repo-tag-name">${escapeHtml(item.name)} <span class="repo-tag-ver">v${escapeHtml(item.version || "")}</span></div>
+            <div class="repo-tag-meta">${escapeHtml(item.author || "未知作者")} · 更新 ${escapeHtml(item.updated || data.updated_at || "-")}</div>
           </div>
-          <div class="cloud-item-side"><span class="cloud-item-status">${escapeHtml(statusText)}</span>${action}</div>
+          <button class="${cls} repo-tag-act" type="button" data-id="${escapeHtml(item.id)}">${label}</button>
         </div>`;
       })
       .join("");
   }
 
-  async function cloudLoadRepo() {
-    setCloudStatus("读取中…");
-    const text = await ghReadText("manifest.json");
-    const manifest = JSON.parse(text);
-    if (!Array.isArray(manifest.scripts)) throw new Error("manifest.json 格式不对");
-    state.cloudManifest = manifest;
-    renderCloudList();
-    setCloudStatus(`已读取 ${manifest.scripts.length} 个脚本${manifest.updated_at ? "（" + manifest.updated_at + "）" : ""}`);
-  }
-
-  async function cloudInstall(item) {
+  async function installRepoScript(item) {
     if (!item) throw new Error("找不到该脚本");
-    const code = await ghReadText(item.file);
+    const resp = await fetch(repoRawUrl(item.file));
+    if (!resp.ok) throw new Error(`脚本读取失败 ${resp.status}`);
+    const code = await resp.text();
     if (!/==UserScript==/.test(code)) throw new Error("脚本头不合法，已中止");
-    const before = findInstalledTask(item);
+    const before = findTaskByKey(`${item.author || ""}/${item.name || ""}`);
     const kept = before
       ? {
           _params: before._params || {},
@@ -1622,110 +1555,121 @@ exports.check = async function(param) {
         }
       : { enable: true };
     const task = await send(MESSAGE_PATHS.taskAdd, { code });
-    await send(
-      MESSAGE_PATHS.taskSet,
-      Object.assign({ author: task.author, name: task.name }, kept)
-    );
+    await send(MESSAGE_PATHS.taskSet, Object.assign({ author: task.author, name: task.name }, kept));
     await refreshViewAfterMutation();
-    renderCloudList();
+    renderRepoTags();
     showToast(`${before ? "已更新" : "已安装"}：${task.name} v${task.version || item.version}`);
   }
 
-  async function cloudSaveSettings() {
-    await storageSet({
-      [CLOUD_KEYS.repo]: String(cloudEl("cloud-repo").value || "").trim(),
-      [CLOUD_KEYS.branch]: String(cloudEl("cloud-branch").value || CLOUD_DEFAULT_BRANCH).trim() || CLOUD_DEFAULT_BRANCH,
-      [CLOUD_KEYS.token]: String(cloudEl("cloud-token").value || "").trim(),
-    });
-    setCloudStatus("已保存（只存在本机 chrome.storage.local）");
+  // ===== 多选 / 批量 / 拖动排序 =====
+  function selectedKeys() {
+    return Array.from(state.selected).filter((key) => !!findTaskByKey(key));
   }
 
-  async function cloudClearSettings() {
-    await storageSet({ [CLOUD_KEYS.token]: "" });
-    const tokenEl = cloudEl("cloud-token");
-    if (tokenEl) tokenEl.value = "";
-    setCloudStatus("已清除 PAT");
-  }
-
-  async function cloudUpload() {
-    const payload = {
-      exported_at: new Date().toISOString(),
-      config: await send(MESSAGE_PATHS.configGet),
-      tasks: await send(MESSAGE_PATHS.taskList),
-    };
-    setCloudStatus("上传中…");
-    await ghWrite(CLOUD_SYNC_PATH, JSON.stringify(payload, null, 2), `sync: ${payload.exported_at}`);
-    setCloudStatus(`已上传 ${payload.tasks.length} 个脚本（${payload.exported_at}）`);
-    showToast("已上传到云端");
-  }
-
-  async function cloudRestore() {
-    const text = await ghReadText(CLOUD_SYNC_PATH);
-    const parsed = JSON.parse(text);
-    const tasks = Array.isArray(parsed) ? parsed : Array.isArray(parsed.tasks) ? parsed.tasks : [];
-    if (!tasks.length) throw new Error("云端快照里没有脚本");
-    if (!window.confirm(`将从云端恢复 ${tasks.length} 个脚本，会覆盖同名脚本（参数一并覆盖）。继续？`)) return;
-    const local = await send(MESSAGE_PATHS.taskList);
-    let added = 0;
-    let updated = 0;
-    let failed = 0;
-    for (const task of tasks) {
-      const code = task && (task.code || task);
-      if (typeof code !== "string" || !/==UserScript==/.test(code)) {
-        failed += 1;
-        continue;
-      }
-      const exists = local.some(
-        (row) => String(row.author || "") === String(task.author || "") && String(row.name || "") === String(task.name || "")
-      );
-      try {
-        await send(MESSAGE_PATHS.taskAdd, { code });
-        await send(MESSAGE_PATHS.taskSet, {
-          author: task.author,
-          name: task.name,
-          _params: task._params || {},
-          enable: typeof task.enable === "boolean" ? task.enable : true,
-          ok: task.ok || 0,
-          cnt: task.cnt || 0,
-          success_at: task.success_at || 0,
-          failure_at: task.failure_at || 0,
-          run_at: task.run_at || 0,
-          online_at: task.online_at || 0,
-        });
-        if (exists) updated += 1;
-        else added += 1;
-      } catch (error) {
-        failed += 1;
-      }
+  function syncSelectionBoxes() {
+    const all = document.getElementById("select-all");
+    const info = document.getElementById("batch-info");
+    const count = selectedKeys().length;
+    if (all) {
+      all.checked = state.tasks.length > 0 && count === state.tasks.length;
+      all.indeterminate = count > 0 && count < state.tasks.length;
     }
-    if (parsed.config) {
-      await send(MESSAGE_PATHS.configSet, parsed.config);
-      await loadConfig();
+    if (info) info.textContent = count ? `已选 ${count} 个` : "";
+  }
+
+  async function batchSetEnabled(enabled) {
+    const keys = selectedKeys();
+    if (!keys.length) {
+      showToast("先勾选脚本");
+      return;
+    }
+    for (const key of keys) {
+      const task = findTaskByKey(key);
+      if (!task || task.enable === enabled) continue;
+      task.enable = enabled;
+      await send(MESSAGE_PATHS.taskSet, task);
+      if (enabled) await send(MESSAGE_PATHS.taskCheck, key).catch(() => {});
     }
     await refreshViewAfterMutation();
-    renderCloudList();
-    setCloudStatus(`恢复完成：新增 ${added}，覆盖 ${updated}${failed ? `，失败 ${failed}` : ""}`);
+    showToast(`${enabled ? "已启用" : "已禁用"} ${keys.length} 个`);
   }
 
-  async function cloudInit() {
-    const settings = await cloudSettings();
-    const repoEl = cloudEl("cloud-repo");
-    const branchEl = cloudEl("cloud-branch");
-    const tokenEl = cloudEl("cloud-token");
-    if (repoEl) repoEl.value = settings.repo || CLOUD_DEFAULT_REPO;
-    if (branchEl) branchEl.value = settings.branch;
-    if (tokenEl) tokenEl.value = settings.token;
-    if (!settings.repo) await storageSet({ [CLOUD_KEYS.repo]: CLOUD_DEFAULT_REPO });
-    renderCloudList();
-  }
-
-  async function cloudGuard(fn) {
-    try {
-      setCloudStatus("处理中…");
-      await fn();
-    } catch (error) {
-      setCloudStatus(String((error && error.message) || error), true);
+  async function batchDelete() {
+    const keys = selectedKeys();
+    if (!keys.length) {
+      showToast("先勾选脚本");
+      return;
     }
+    if (!confirm(`确定删除选中的 ${keys.length} 个脚本？`)) return;
+    for (const key of keys) await send(MESSAGE_PATHS.taskDelete, key);
+    state.selected.clear();
+    await refreshViewAfterMutation();
+    showToast(`已删除 ${keys.length} 个`);
+  }
+
+  async function saveOrder(keys) {
+    state.order = keys;
+    await send(MESSAGE_PATHS.configSet, { order: keys });
+  }
+
+  function bindSelectionAndDrag() {
+    let dragKey = "";
+    taskBody.addEventListener("change", (event) => {
+      const box = event.target.closest('input[data-action="select"]');
+      if (!box) return;
+      if (box.checked) state.selected.add(box.dataset.key);
+      else state.selected.delete(box.dataset.key);
+      syncSelectionBoxes();
+    });
+    const selectAll = document.getElementById("select-all");
+    if (selectAll) {
+      selectAll.addEventListener("change", () => {
+        if (selectAll.checked) state.tasks.forEach((task) => state.selected.add(taskKey(task)));
+        else state.selected.clear();
+        renderTasks();
+      });
+    }
+    taskBody.addEventListener("dragstart", (event) => {
+      const row = event.target.closest("tr[data-task-key]");
+      if (!row) return;
+      dragKey = row.dataset.taskKey;
+      row.classList.add("dragging");
+      try {
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", dragKey);
+      } catch (error) {
+        /* ignore */
+      }
+    });
+    taskBody.addEventListener("dragend", () => {
+      taskBody.querySelectorAll("tr").forEach((row) => row.classList.remove("dragging", "drop-target"));
+      dragKey = "";
+    });
+    taskBody.addEventListener("dragover", (event) => {
+      const row = event.target.closest("tr[data-task-key]");
+      if (!row || !dragKey || row.dataset.taskKey === dragKey) return;
+      event.preventDefault();
+      taskBody.querySelectorAll("tr.drop-target").forEach((item) => item.classList.remove("drop-target"));
+      row.classList.add("drop-target");
+    });
+    taskBody.addEventListener("drop", (event) => {
+      const row = event.target.closest("tr[data-task-key]");
+      if (!row || !dragKey) return;
+      event.preventDefault();
+      const targetKey = row.dataset.taskKey;
+      const keys = Array.from(taskBody.querySelectorAll("tr[data-task-key]")).map((item) => item.dataset.taskKey);
+      const from = keys.indexOf(dragKey);
+      if (from >= 0) keys.splice(from, 1);
+      const to = keys.indexOf(targetKey);
+      keys.splice(to < 0 ? keys.length : to, 0, dragKey);
+      dragKey = "";
+      saveOrder(keys)
+        .then(() => {
+          renderTasks();
+          showToast("排序已保存");
+        })
+        .catch(reportError);
+    });
   }
 
   (async function init() {
@@ -1738,7 +1682,6 @@ exports.check = async function(param) {
     if (saveConfigEl) saveConfigEl.textContent = "保存配置";
     if (addCrossEl) addCrossEl.textContent = "添加";
     await loadConfig();
-    await cloudInit();
     await refresh();
     startAutoRefresh();
     await refreshOnlineStatus(false);

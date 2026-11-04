@@ -892,15 +892,133 @@
         padding-inline: 14px;
       }
     }
-  </style>
-</head>
+  .cloud {
+        width: 100%;
+        margin: 0 auto 12px;
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        padding: 12px 14px;
+      }
+
+      .cloud-head {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+
+      .cloud-hint {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .cloud-form {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 12px;
+        align-items: flex-end;
+        margin-bottom: 10px;
+      }
+
+      .cloud-form label {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .cloud-form input {
+        min-width: 180px;
+        height: 30px;
+        padding: 0 8px;
+        border: 1px solid var(--line);
+        border-radius: 3px;
+        background: #fff;
+        color: var(--text);
+        font: 13px/1.2 "Microsoft YaHei", "Segoe UI", sans-serif;
+      }
+
+      .cloud-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        padding-top: 8px;
+        border-top: 1px dashed var(--line);
+      }
+
+      .cloud-status {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .cloud-status.err {
+        color: #c0392b;
+      }
+
+      .cloud-list:not(:empty) {
+        margin-top: 10px;
+        border-top: 1px dashed var(--line);
+      }
+
+      .cloud-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 8px 0;
+        border-bottom: 1px solid #f0f0f0;
+      }
+
+      .cloud-item:last-child {
+        border-bottom: 0;
+      }
+
+      .cloud-item-name {
+        font-weight: 600;
+      }
+
+      .cloud-item-ver {
+        color: var(--muted);
+        font-weight: 400;
+        font-size: 12px;
+      }
+
+      .cloud-item-desc {
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 2px;
+      }
+
+      .cloud-item-side {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        white-space: nowrap;
+      }
+
+      .cloud-item-status {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .cloud-empty {
+        color: var(--muted);
+        font-size: 12px;
+        padding-top: 10px;
+      }
+    </style>
+  </head>
 <body>
   <header class="topbar">
-    <div class="brand">魂签 <small id="app-version">2.6.1</small></div>
+    <div class="brand">魂签 <small id="app-version">2.7.0</small></div>
     <nav class="nav">
       <button id="nav-config" type="button">跨域管理</button>
       <a href="#scripts">脚本管理</a>
-      <a href="https://soulsign.inu1255.cn/" target="_blank" rel="noreferrer">脚本推荐</a>
+      <a href="#cloud">我的脚本库</a>
+      <a href="https://github.com/skipandgoon/soulsign-scripts" target="_blank" rel="noreferrer">脚本仓库</a>
       <a href="https://github.com/inu1255/soulsign-chrome" target="_blank" rel="noreferrer">源码</a>
     </nav>
   </header>
@@ -913,6 +1031,33 @@
       <button class="btn" id="add-script">添加脚本</button>
       <button class="btn" id="record-script">录制脚本</button>
       <input id="file-input" class="hidden" type="file" accept=".js,.json,.txt,.soulsign">
+    </section>
+
+    <section class="cloud" id="cloud">
+      <div class="cloud-head">
+        <strong>我的脚本库 / 云端同步</strong>
+        <span class="cloud-hint">私有仓库，仅本机使用；凭据只存浏览器本地</span>
+      </div>
+      <div class="cloud-form">
+        <label>仓库
+          <input id="cloud-repo" type="text" placeholder="owner/repo" spellcheck="false">
+        </label>
+        <label>分支
+          <input id="cloud-branch" type="text" placeholder="main" spellcheck="false">
+        </label>
+        <label>PAT
+          <input id="cloud-token" type="password" placeholder="github_pat_...（只存本地）" spellcheck="false">
+        </label>
+        <button class="btn" id="cloud-save" type="button">保存</button>
+        <button class="btn ghost" id="cloud-clear" type="button">清除凭据</button>
+      </div>
+      <div class="cloud-actions">
+        <button class="btn" id="cloud-load" type="button">读取脚本库</button>
+        <button class="btn light" id="cloud-upload" type="button">上传到云端</button>
+        <button class="btn light" id="cloud-restore" type="button">从云端恢复</button>
+        <span class="cloud-status" id="cloud-status"></span>
+      </div>
+      <div class="cloud-list" id="cloud-list"></div>
     </section>
 
     <section class="board" id="scripts">

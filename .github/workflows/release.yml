@@ -15,7 +15,10 @@ jobs:
           ver="${GITHUB_REF_NAME#v}"
           mkdir -p dist
           zip -r "dist/soulsign-${ver}.zip" manifest.json js options.html popup.html offscreen.html sandbox.html icons static favicon.ico README.md
+      - name: Set version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
+          name: 魂签 ${{ env.VERSION }}
           files: dist/*.zip

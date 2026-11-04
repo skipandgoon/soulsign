@@ -996,14 +996,36 @@
 
     .repo-tags {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-      gap: 10px;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      justify-items: stretch;
+      align-items: start;
+    }
+
+    @media (max-width: 1500px) {
+      .repo-tags {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 1100px) {
+      .repo-tags {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 760px) {
+      .repo-tags {
+        grid-template-columns: minmax(0, 1fr);
+      }
     }
 
     .repo-tag {
       display: flex;
       align-items: center;
       gap: 12px;
+      width: 100%;
+      min-height: 62px;
       padding: 10px 12px;
       border: 1px solid var(--line);
       border-radius: 4px;
@@ -1057,7 +1079,7 @@
   </head>
 <body>
   <header class="topbar">
-    <div class="brand">魂签 <small id="app-version">2.8.1</small></div>
+    <div class="brand">魂签 <small id="app-version">2.8.2</small></div>
     <nav class="nav">
       <button id="nav-config" type="button">跨域管理</button>
       <a href="#scripts">脚本管理</a>

@@ -48,6 +48,7 @@ exports.check = async function(param) {
     selected: new Set(),
     order: [],
     repoManifest: null,
+    dragging: false,
     taskRowMap: new Map(),
     paramsTaskKey: "",
     editorTaskKey: "",
@@ -359,6 +360,7 @@ exports.check = async function(param) {
     const online = onlineStatus(task);
     const rate = taskRateText(task);
     return `
+      <td class="col-drag"><span class="drag-handle" draggable="true" title="拖动排序">&#8942;&#8942;</span></td>
       <td class="col-select"><input type="checkbox" data-action="select" data-key="${escapeHtml(key)}" ${state.selected.has(key) ? "checked" : ""}></td>
       <td class="col-author">${escapeHtml(task.author || "-")}</td>
       <td class="name-cell col-name">${
@@ -956,6 +958,7 @@ exports.check = async function(param) {
   }
 
   function renderTasks() {
+    if (state.dragging) return;
     emptyState.classList.toggle("hidden", state.tasks.length > 0);
     const orderIndex = new Map((state.order || []).map((key, index) => [key, index]));
     const sorted = state.tasks.slice().sort((left, right) => {
@@ -971,7 +974,6 @@ exports.check = async function(param) {
       const key = taskKey(task);
       const tr = state.taskRowMap.get(key) || document.createElement("tr");
       tr.dataset.taskKey = key;
-      tr.draggable = true;
       tr.innerHTML = renderTaskRow(task, key);
       nextRows.set(key, tr);
       fragment.appendChild(tr);
@@ -1575,6 +1577,10 @@ exports.check = async function(param) {
       all.indeterminate = count > 0 && count < state.tasks.length;
     }
     if (info) info.textContent = count ? `已选 ${count} 个` : "";
+    ["batch-enable", "batch-disable", "batch-delete"].forEach((id) => {
+      const button = document.getElementById(id);
+      if (button) button.classList.toggle("is-active", count > 0);
+    });
   }
 
   async function batchSetEnabled(enabled) {
@@ -1583,15 +1589,24 @@ exports.check = async function(param) {
       showToast("先勾选脚本");
       return;
     }
-    for (const key of keys) {
-      const task = findTaskByKey(key);
-      if (!task || task.enable === enabled) continue;
-      task.enable = enabled;
-      await send(MESSAGE_PATHS.taskSet, task);
-      if (enabled) await send(MESSAGE_PATHS.taskCheck, key).catch(() => {});
+    const targets = keys.map((key) => findTaskByKey(key)).filter((task) => task && task.enable !== enabled);
+    if (!targets.length) {
+      showToast(`选中的已是${enabled ? "启用" : "停用"}状态`);
+      return;
     }
-    await refreshViewAfterMutation();
-    showToast(`${enabled ? "已启用" : "已禁用"} ${keys.length} 个`);
+    // 先改本地状态并立即重绘，点击无延迟；后台再落盘
+    targets.forEach((task) => {
+      task.enable = enabled;
+    });
+    renderTasks();
+    await Promise.all(targets.map((task) => send(MESSAGE_PATHS.taskSet, task).catch(() => {})));
+    if (enabled) {
+      targets.forEach((task) => {
+        send(MESSAGE_PATHS.taskCheck, taskKey(task)).catch(() => {});
+      });
+    }
+    requestRefresh({ force: true }).catch(() => {});
+    showToast(`${enabled ? "已启用" : "已禁用"} ${targets.length} 个`);
   }
 
   async function batchDelete() {
@@ -1601,9 +1616,12 @@ exports.check = async function(param) {
       return;
     }
     if (!confirm(`确定删除选中的 ${keys.length} 个脚本？`)) return;
-    for (const key of keys) await send(MESSAGE_PATHS.taskDelete, key);
+    const removing = new Set(keys);
     state.selected.clear();
-    await refreshViewAfterMutation();
+    state.tasks = state.tasks.filter((task) => !removing.has(taskKey(task)));
+    renderTasks();
+    await Promise.all(keys.map((key) => send(MESSAGE_PATHS.taskDelete, key).catch(() => {})));
+    requestRefresh({ force: true }).catch(() => {});
     showToast(`已删除 ${keys.length} 个`);
   }
 
@@ -1630,13 +1648,17 @@ exports.check = async function(param) {
       });
     }
     taskBody.addEventListener("dragstart", (event) => {
-      const row = event.target.closest("tr[data-task-key]");
+      const handle = event.target.closest(".drag-handle");
+      if (!handle) return;
+      const row = handle.closest("tr[data-task-key]");
       if (!row) return;
       dragKey = row.dataset.taskKey;
+      state.dragging = true;
       row.classList.add("dragging");
       try {
         event.dataTransfer.effectAllowed = "move";
         event.dataTransfer.setData("text/plain", dragKey);
+        event.dataTransfer.setDragImage(row, 24, 20);
       } catch (error) {
         /* ignore */
       }
@@ -1644,6 +1666,8 @@ exports.check = async function(param) {
     taskBody.addEventListener("dragend", () => {
       taskBody.querySelectorAll("tr").forEach((row) => row.classList.remove("dragging", "drop-target"));
       dragKey = "";
+      state.dragging = false;
+      renderTasks();
     });
     taskBody.addEventListener("dragover", (event) => {
       const row = event.target.closest("tr[data-task-key]");
@@ -1663,11 +1687,11 @@ exports.check = async function(param) {
       const to = keys.indexOf(targetKey);
       keys.splice(to < 0 ? keys.length : to, 0, dragKey);
       dragKey = "";
+      state.dragging = false;
+      state.order = keys;
+      renderTasks();
       saveOrder(keys)
-        .then(() => {
-          renderTasks();
-          showToast("排序已保存");
-        })
+        .then(() => showToast("排序已保存"))
         .catch(reportError);
     });
   }

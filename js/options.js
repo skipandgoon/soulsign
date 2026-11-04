@@ -1488,19 +1488,20 @@ exports.check = async function(param) {
     return new TextDecoder().decode(bytes);
   }
 
-  // 读写 GitHub Contents API（私有仓库必须带 token）
+  // 读写 GitHub Contents API：public 仓库可免 token 读；写操作（上传/恢复）必须带 token
   async function ghRequest(path, options) {
     const settings = await cloudSettings();
     if (!settings.repo) throw new Error("先填仓库（owner/repo）");
-    if (!settings.token) throw new Error("先填 PAT");
     const opts = options || {};
+    const isWrite = opts.method === "PUT";
+    if (isWrite && !settings.token) throw new Error("上传/恢复需要 PAT（读取公开仓库不需要）");
     const url = `https://api.github.com/repos/${settings.repo}/contents/${path}`;
-    const target = opts.method === "PUT" ? url : `${url}?ref=${encodeURIComponent(settings.branch)}`;
+    const target = isWrite ? url : `${url}?ref=${encodeURIComponent(settings.branch)}`;
     const headers = {
-      Authorization: `Bearer ${settings.token}`,
       Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28",
     };
+    if (settings.token) headers.Authorization = `Bearer ${settings.token}`;
     if (opts.body) headers["Content-Type"] = "application/json";
     const resp = await fetch(target, {
       method: opts.method || "GET",
@@ -1515,7 +1516,18 @@ exports.check = async function(param) {
     return resp.json();
   }
 
+  // 读文件：public 仓库直接走 raw（不需要 token）；private 仓库用 Contents API + token
   async function ghReadText(path) {
+    const settings = await cloudSettings();
+    if (!settings.repo) throw new Error("先填仓库（owner/repo）");
+    if (!settings.token) {
+      const seg = String(path).split("/").map((part) => encodeURIComponent(part)).join("/");
+      const resp = await fetch(
+        `https://raw.githubusercontent.com/${settings.repo}/${settings.branch}/${seg}?t=${Date.now()}`
+      );
+      if (!resp.ok) throw new Error(`读取失败 ${resp.status}（仓库 / 分支 / 路径对不上？）`);
+      return resp.text();
+    }
     const data = await ghRequest(path);
     if (!data) throw new Error(`仓库里没有 ${path}`);
     return fromBase64(data.content);

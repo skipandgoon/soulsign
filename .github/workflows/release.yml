@@ -1,0 +1,21 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build zip
+        run: |
+          set -e
+          ver="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          zip -r "dist/soulsign-${ver}.zip" manifest.json js options.html popup.html offscreen.html sandbox.html icons static favicon.ico README.md
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip

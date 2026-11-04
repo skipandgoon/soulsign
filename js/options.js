@@ -974,6 +974,7 @@ exports.check = async function(param) {
       const key = taskKey(task);
       const tr = state.taskRowMap.get(key) || document.createElement("tr");
       tr.dataset.taskKey = key;
+      if (!state.dragging) tr.classList.remove("dragging", "drop-target");
       tr.innerHTML = renderTaskRow(task, key);
       nextRows.set(key, tr);
       fragment.appendChild(tr);
@@ -1688,6 +1689,7 @@ exports.check = async function(param) {
       keys.splice(to < 0 ? keys.length : to, 0, dragKey);
       dragKey = "";
       state.dragging = false;
+      taskBody.querySelectorAll("tr").forEach((item) => item.classList.remove("dragging", "drop-target"));
       state.order = keys;
       renderTasks();
       saveOrder(keys)

@@ -165,11 +165,22 @@
     async function request(config) {
       const url = config.url;
       if (!checkDomain(url)) throw new Error("domain mismatch");
+      const headers = Object.assign({}, config.headers || {});
+      let body = config.data;
+      // URLSearchParams 不能被结构化克隆，直接塞进 postMessage 会抛 DataCloneError。
+      // 在沙箱侧先序列化成表单字符串，并补上 fetch 会用的 Content-Type。
+      if (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams) {
+        body = body.toString();
+        const hasContentType = Object.keys(headers).some(
+          (key) => key.toLowerCase() === "content-type"
+        );
+        if (!hasContentType) headers["Content-Type"] = "application/x-www-form-urlencoded;charset=UTF-8";
+      }
       return callParent(rid, "fetch", {
         url,
         method: config.method || "GET",
-        headers: config.headers || {},
-        body: config.data,
+        headers,
+        body,
         credentials: "include",
       });
     }

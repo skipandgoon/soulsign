@@ -5,6 +5,7 @@ const scripts = [
   "verify-offscreen-pure.js",
   "verify-options-pure.js",
   "verify-sandbox-guard.js",
+  "verify-sandbox-axios.js",
 ];
 
 for (const script of scripts) {

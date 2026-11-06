@@ -19,6 +19,8 @@
 主要更新事项：
 
 - **2.7.x**：移除对第三方脚本推荐站点的依赖，改为读取自有脚本仓库的 `manifest.json`
+- **2.8.5**
+  - 修复 `axios.post(url, new URLSearchParams(...))` 触发 `DataCloneError`：表单参数在沙箱侧先序列化再投递，并补 `application/x-www-form-urlencoded` 头
 - **2.8.4**
   - 权限边界加固：offscreen 侧按当前任务的 `@domain` / `@grant` 复核每一次 fetch、cookie 读写、通知与窗口操作，脚本绕过封装伪造消息不再能越权
   - `require` / `loadjs` 仅允许已声明授权，加载第三方 URL 时不再携带 cookie

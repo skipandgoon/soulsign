@@ -6,7 +6,20 @@
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  function callParent(method, ...args) {
+  // sandbox 页是不透明源（manifest sandbox），但父窗口是扩展源：
+  // location.ancestorOrigins[0] 就是它；取不到才退回 "*"，接收侧仍以 event.source 判定。
+  const PARENT_TARGET = (function () {
+    try {
+      const ancestors = location.ancestorOrigins;
+      if (ancestors && ancestors[0] && ancestors[0] !== "null") return ancestors[0];
+    } catch (error) {}
+    try {
+      if (location.host) return location.protocol + "//" + location.host;
+    } catch (error) {}
+    return "*";
+  })();
+
+  function callParent(rid, method, ...args) {
     return new Promise((resolve, reject) => {
       const id = "parent_" + sequence++;
       pending.set(id, { resolve, reject });
@@ -14,22 +27,23 @@
         {
           __soulsign__: true,
           id,
+          rid: rid || null,
           type: "sandbox-call",
           payload: { method, args },
         },
-        "*"
+        PARENT_TARGET
       );
     });
   }
 
-  function frameProxy(handle, url) {
+  function frameProxy(handle, url, rid) {
     return {
       url,
       eval(code, ...args) {
         if (typeof code === "function") {
           code = `(${code})(${args.map((arg) => JSON.stringify(arg)).join(",")})`;
         }
-        return callParent("frame.eval", handle, code);
+        return callParent(rid, "frame.eval", handle, code);
       },
       inject(code, ...args) {
         if (typeof code === "function") {
@@ -43,10 +57,10 @@
           script.remove();
           return true;
         })()`;
-        return callParent("frame.eval", handle, wrapped);
+        return callParent(rid, "frame.eval", handle, wrapped);
       },
       async waitLoaded(timeout) {
-        return callParent("frame.waitLoaded", handle, timeout || 10000);
+        return callParent(rid, "frame.waitLoaded", handle, timeout || 10000);
       },
       async waitUntil(selector, timeout) {
         const tries = Math.ceil((timeout || 10000) / 1000);
@@ -112,12 +126,19 @@
         }, selector, keyCode);
       },
       async iframes() {
-        const frames = await callParent("frame.iframes", handle);
-        return frames.map((frame) => frameProxy(frame.handle, frame.url));
+        const frames = await callParent(rid, "frame.iframes", handle);
+        return frames.map((frame) => frameProxy(frame.handle, frame.url, rid));
       },
       async getFrame(targetUrl, fuzzy, timeout) {
-        const frame = await callParent("frame.getFrame", handle, targetUrl, fuzzy || 0, timeout || 10000);
-        return frameProxy(frame.handle, frame.url);
+        const frame = await callParent(
+          rid,
+          "frame.getFrame",
+          handle,
+          targetUrl,
+          fuzzy || 0,
+          timeout || 10000
+        );
+        return frameProxy(frame.handle, frame.url, rid);
       },
       sleep,
     };
@@ -125,6 +146,7 @@
 
   function createAxios(task) {
     const domains = task.domains || [];
+    const rid = task._rid || null;
 
     function checkDomain(url) {
       try {
@@ -143,7 +165,7 @@
     async function request(config) {
       const url = config.url;
       if (!checkDomain(url)) throw new Error("domain mismatch");
-      return callParent("fetch", {
+      return callParent(rid, "fetch", {
         url,
         method: config.method || "GET",
         headers: config.headers || {},
@@ -176,6 +198,7 @@
 
   function createTaskModule(task) {
     const grant = new Set(task.grants || []);
+    const rid = task._rid || null;
     const inject = {
       axios: createAxios(task),
       tools: extTask(task.version || "0.0.0"),
@@ -183,7 +206,12 @@
         if (!grant.has("require") && !grant.has("loadjs")) {
           return Promise.reject("missing grant loadjs");
         }
-        return callParent("fetch", { url, method: "GET", credentials: "include" }).then(({ data }) => {
+        return callParent(rid, "fetch", {
+          url,
+          method: "GET",
+          credentials: "include",
+          kind: "load",
+        }).then(({ data }) => {
           const module = { exports: {} };
           const mod = new Function("exports", "module", data).call(module.exports, module.exports, module);
           if (mod) module.exports = mod;
@@ -195,11 +223,11 @@
       },
       getCookie(url, name) {
         if (!grant.has("cookie")) return Promise.reject("missing grant cookie");
-        return callParent("getCookie", url, name);
+        return callParent(rid, "getCookie", url, name);
       },
       setCookie(url, name, value) {
         if (!grant.has("cookie")) return Promise.reject("missing grant cookie");
-        return callParent("setCookie", url, name, value);
+        return callParent(rid, "setCookie", url, name, value);
       },
       $(html) {
         const div = document.createElement("div");
@@ -208,10 +236,10 @@
       },
       notify(body, url, timeout) {
         if (!grant.has("notify")) throw new Error("missing grant notify");
-        return callParent("notify", task.name, body, url, timeout || 300000);
+        return callParent(rid, "notify", task.name, body, url, timeout || 300000);
       },
       async openWindow(url, dev, fn, preload) {
-        const opened = await callParent("open", {
+        const opened = await callParent(rid, "open", {
           url,
           active: !!dev,
           preload: typeof preload === "function" ? `(${preload})();` : preload,
@@ -219,15 +247,15 @@
           windowMode: true,
           timeout: task._timeout || 10000,
         });
-        const fb = frameProxy(opened.handle, opened.url);
+        const fb = frameProxy(opened.handle, opened.url, rid);
         try {
           return await fn(fb);
         } finally {
-          await callParent("closeHandle", opened.handle);
+          await callParent(rid, "closeHandle", opened.handle);
         }
       },
       async openTab(url, dev, fn, preload) {
-        const opened = await callParent("open", {
+        const opened = await callParent(rid, "open", {
           url,
           active: !!dev,
           preload: typeof preload === "function" ? `(${preload})();` : preload,
@@ -235,11 +263,11 @@
           windowMode: false,
           timeout: task._timeout || 10000,
         });
-        const fb = frameProxy(opened.handle, opened.url);
+        const fb = frameProxy(opened.handle, opened.url, rid);
         try {
           return await fn(fb);
         } finally {
-          await callParent("closeHandle", opened.handle);
+          await callParent(rid, "closeHandle", opened.handle);
         }
       },
       open(url, dev, fn, preload) {
@@ -286,6 +314,8 @@
   }
 
   window.addEventListener("message", async (event) => {
+    // 只接受父窗口（offscreen 文档）的消息，别的窗口发来的一律丢弃。
+    if (event.source !== parent) return;
     const data = event.data;
     if (!data || !data.__soulsign__) return;
     if (data.replyTo && pending.has(data.replyTo)) {
@@ -297,40 +327,42 @@
     if (data.type === "compile") {
       event.source.postMessage(
         { __soulsign__: true, replyTo: data.id, ok: true, payload: { compiled: true } },
-        "*"
+        PARENT_TARGET
       );
       return;
     }
     if (data.type === "run") {
       try {
+        if (data.payload && data.payload.task) data.payload.task._rid = data.rid || null;
         const result = await runTask(data.payload.task);
         event.source.postMessage(
           { __soulsign__: true, replyTo: data.id, ok: true, payload: result },
-          "*"
+          PARENT_TARGET
         );
       } catch (error) {
         event.source.postMessage(
           { __soulsign__: true, replyTo: data.id, ok: false, error: String(error) },
-          "*"
+          PARENT_TARGET
         );
       }
       return;
     }
     if (data.type === "check") {
       try {
+        if (data.payload && data.payload.task) data.payload.task._rid = data.rid || null;
         const result = await checkTask(data.payload.task);
         event.source.postMessage(
           { __soulsign__: true, replyTo: data.id, ok: true, payload: result },
-          "*"
+          PARENT_TARGET
         );
       } catch (error) {
         event.source.postMessage(
           { __soulsign__: true, replyTo: data.id, ok: false, error: String(error) },
-          "*"
+          PARENT_TARGET
         );
       }
     }
   });
 
-  parent.postMessage({ __soulsign__: true, type: "sandbox-ready" }, "*");
+  parent.postMessage({ __soulsign__: true, type: "sandbox-ready" }, PARENT_TARGET);
 })();

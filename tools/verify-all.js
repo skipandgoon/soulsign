@@ -4,6 +4,7 @@ const { spawnSync } = require("child_process");
 const scripts = [
   "verify-offscreen-pure.js",
   "verify-options-pure.js",
+  "verify-sandbox-guard.js",
 ];
 
 for (const script of scripts) {

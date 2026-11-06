@@ -71,6 +71,10 @@
   let lastTickAt = 0;
   const pending = new Map();
   const handles = new Map();
+  // 每次 run/check 登记一个上下文：特权调用一律按这里的 domains/grants 复核，
+  // 不采信沙箱消息里自报的权限（脚本可以绕开封装直接 postMessage）。
+  const runs = new Map();
+  let nextRunId = 1;
   const recordState = {
     url: "",
     title: "",
@@ -218,6 +222,9 @@
   }
 
   window.addEventListener("message", async (event) => {
+    // sandbox 页是 manifest 声明的隔离页（不透明源，event.origin 恒为 "null"），
+    // 因此只能认窗口引用：不是我们的 sandbox iframe 发来的一律丢弃。
+    if (!iframe.contentWindow || event.source !== iframe.contentWindow) return;
     const data = event.data;
     if (!data || !data.__soulsign__) return;
     if (data.type === "sandbox-ready") {
@@ -231,8 +238,16 @@
       return;
     }
     if (data.type === "sandbox-call") {
+      const run = runs.get(data.rid);
+      if (!run) {
+        event.source.postMessage(
+          { __soulsign__: true, replyTo: data.id, ok: false, error: "inactive run" },
+          "*"
+        );
+        return;
+      }
       try {
-        const payload = await sandboxCall(data.payload);
+        const payload = await sandboxCall(data.payload, run);
         event.source.postMessage(
           { __soulsign__: true, replyTo: data.id, ok: true, payload },
           "*"
@@ -256,11 +271,26 @@
 
   async function postToSandbox(type, payload) {
     await waitSandbox();
-    return new Promise((resolve, reject) => {
-      const id = "sandbox_" + sequence++;
-      pending.set(id, { resolve, reject });
-      iframe.contentWindow.postMessage({ __soulsign__: true, id, type, payload }, "*");
-    });
+    const task = payload && payload.task;
+    let rid = null;
+    if (task) {
+      rid = "run_" + nextRunId++;
+      runs.set(rid, {
+        rid,
+        domains: Array.isArray(task.domains) ? task.domains.slice() : [],
+        grants: new Set(Array.isArray(task.grants) ? task.grants.map(String) : []),
+      });
+    }
+    try {
+      return await new Promise((resolve, reject) => {
+        const id = "sandbox_" + sequence++;
+        pending.set(id, { resolve, reject });
+        // sandbox 页是不透明源，无法用具体 targetOrigin 投递；来源校验在接收侧做。
+        iframe.contentWindow.postMessage({ __soulsign__: true, id, rid, type, payload }, "*");
+      });
+    } finally {
+      if (rid) runs.delete(rid);
+    }
   }
 
   async function getTasksMap() {
@@ -411,6 +441,23 @@
     }
   }
 
+  function isHttpUrl(url) {
+    try {
+      const parsed = new URL(url);
+      return parsed.protocol === "http:" || parsed.protocol === "https:";
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // 特权侧权威判定：域名与授权一律以本次 run 登记的任务声明为准。
+  // 沙箱里的脚本可以绕开封装直接 postMessage，所以不能采信消息里带的 domains/grants。
+  function assertTaskDomain(run, url) {
+    if (!isHttpUrl(url) || !checkDomain(run.domains, url)) {
+      throw new Error("domain mismatch");
+    }
+  }
+
   async function ensureLoaded(tabId, timeout) {
     return bridge("tabs.waitComplete", { tabId, timeout });
   }
@@ -428,9 +475,9 @@
     return result.value;
   }
 
-  async function createHandle(tabId, frameId, domains, url, windowId) {
+  async function createHandle(tabId, frameId, domains, url, windowId, rid) {
     const handle = String(nextHandle++);
-    handles.set(handle, { tabId, frameId, domains, url, windowId });
+    handles.set(handle, { tabId, frameId, domains, url, windowId, rid });
     return handle;
   }
 
@@ -494,17 +541,34 @@ exports.check = async function(param) {
 `;
   }
 
-  async function sandboxCall(payload) {
-    const { method, args } = payload;
+  async function sandboxCall(payload, run) {
+    const { method, args } = payload || {};
+    if (!run) throw new Error("inactive run");
     if (method === "fetch") {
-      const [request] = args;
+      const [request] = args || [];
+      if (!request || typeof request.url !== "string") throw new Error("invalid fetch request");
+      const isModuleLoad = request.kind === "load";
+      if (isModuleLoad) {
+        if (!run.grants.has("require") && !run.grants.has("loadjs")) {
+          throw new Error("missing grant loadjs");
+        }
+        if (!isHttpUrl(request.url)) throw new Error("invalid module url");
+      } else {
+        assertTaskDomain(run, request.url);
+      }
+      // 加载模块只需要源码：域外地址一律不带 cookie，避免把目标站点的登录态发出去。
+      const allowCredentials = !isModuleLoad || checkDomain(run.domains, request.url);
       const response = await fetch(request.url, {
         method: request.method || "GET",
         headers: request.headers || {},
         body: request.body,
-        credentials: request.credentials || "include",
+        credentials: allowCredentials ? request.credentials || "include" : "omit",
         redirect: "follow",
       });
+      const finalUrl = response.url || request.url;
+      if (!isModuleLoad && !checkDomain(run.domains, finalUrl)) {
+        throw new Error("domain mismatch after redirect");
+      }
       return {
         status: response.status,
         statusText: response.statusText,
@@ -513,17 +577,23 @@ exports.check = async function(param) {
       };
     }
     if (method === "getCookie") {
-      const [url, name] = args;
+      const [url, name] = args || [];
+      if (!run.grants.has("cookie")) throw new Error("missing grant cookie");
+      assertTaskDomain(run, url);
       const cookie = await bridge("cookies.get", { url, name });
       return cookie && cookie.value;
     }
     if (method === "setCookie") {
-      const [url, name, value] = args;
+      const [url, name, value] = args || [];
+      if (!run.grants.has("cookie")) throw new Error("missing grant cookie");
+      assertTaskDomain(run, url);
       const cookie = await bridge("cookies.set", { url, name, value });
       return cookie && cookie.value;
     }
     if (method === "notify") {
-      const [title, body, url] = args;
+      if (!run.grants.has("notify")) throw new Error("missing grant notify");
+      const [title, body, url] = args || [];
+      if (typeof url === "string" && /^https?:\/\//i.test(url)) assertTaskDomain(run, url);
       const id = "notify_" + Math.random().toString(36).slice(2);
       await bridge("notifications.create", {
         id,
@@ -538,10 +608,11 @@ exports.check = async function(param) {
       return true;
     }
     if (method === "open") {
-      const [options] = args;
-      if (!checkDomain(options.domains || [], options.url)) {
-        throw new Error("invalid domain config");
-      }
+      const [options] = args || [];
+      if (!options || typeof options.url !== "string") throw new Error("invalid open options");
+      // 只信任务声明的 domains；沙箱传上来的 domains 一律忽略。
+      const domains = run.domains;
+      if (!checkDomain(domains, options.url)) throw new Error("invalid domain config");
       let windowId;
       if (options.windowMode) {
         const win = await bridge(
@@ -575,13 +646,15 @@ exports.check = async function(param) {
       await ensureLoaded(tab.id, options.timeout || 10000);
       const resolved = await bridge("tabs.get", tab.id);
       const finalUrl = resolved.url || resolved.pendingUrl || options.url;
-      const handle = await createHandle(tab.id, 0, options.domains || [], finalUrl, windowId);
+      // 句柄照常返回（登录跳转到 SSO 子域是常见流程），但后续每次 frame.eval
+      // 都会复核当前 URL，跳去域外就拿不到执行权。
+      const handle = await createHandle(tab.id, 0, domains, finalUrl, windowId, run.rid);
       return { handle, url: finalUrl };
     }
     if (method === "closeHandle") {
-      const [handle] = args;
+      const [handle] = args || [];
       const info = handles.get(handle);
-      if (!info) return false;
+      if (!info || info.rid !== run.rid) return false;
       handles.delete(handle);
       await closeTarget("tabs.remove", info.tabId, "tab");
       if (info.windowId) {
@@ -590,44 +663,51 @@ exports.check = async function(param) {
       return true;
     }
     if (method === "frame.eval") {
-      const [handle, code] = args;
+      const [handle, code] = args || [];
       const info = handles.get(handle);
-      if (!info) throw new Error("frame not found");
+      if (!info || info.rid !== run.rid) throw new Error("frame not found");
+      // 顶层框架可能在句柄创建后又跳走，执行前再核一次当前 URL。
+      if (info.frameId === 0) {
+        const tab = await bridge("tabs.get", info.tabId);
+        const currentUrl = (tab && (tab.url || tab.pendingUrl)) || "";
+        if (!checkDomain(run.domains, currentUrl)) throw new Error("domain mismatch");
+      }
       return evalInFrame(info.tabId, info.frameId, code);
     }
     if (method === "frame.waitLoaded") {
-      const [handle, timeout] = args;
+      const [handle, timeout] = args || [];
       const info = handles.get(handle);
-      if (!info) throw new Error("frame not found");
+      if (!info || info.rid !== run.rid) throw new Error("frame not found");
       return ensureLoaded(info.tabId, timeout || 10000);
     }
     if (method === "frame.iframes") {
-      const [handle] = args;
+      const [handle] = args || [];
       const info = handles.get(handle);
-      if (!info) throw new Error("frame not found");
+      if (!info || info.rid !== run.rid) throw new Error("frame not found");
       const frames = await bridge("webNavigation.getAllFrames", { tabId: info.tabId });
       const result = [];
-      for (const frame of frames.filter((item) => checkDomain(info.domains || [], item.url || ""))) {
+      for (const frame of frames.filter((item) => checkDomain(run.domains, item.url || ""))) {
         const frameHandle = await createHandle(
           info.tabId,
           frame.frameId,
-          info.domains,
+          run.domains,
           frame.url,
-          info.windowId
+          info.windowId,
+          run.rid
         );
         result.push({ handle: frameHandle, url: frame.url });
       }
       return result;
     }
     if (method === "frame.getFrame") {
-      const [handle, targetUrl, fuzzy] = args;
+      const [handle, targetUrl, fuzzy] = args || [];
       const info = handles.get(handle);
-      if (!info) throw new Error("frame not found");
+      if (!info || info.rid !== run.rid) throw new Error("frame not found");
       let tries = 10;
       while (tries-- > 0) {
         const frames = await bridge("webNavigation.getAllFrames", { tabId: info.tabId });
         const hit = frames.find((frame) => {
-          if (!checkDomain(info.domains || [], frame.url || "")) return false;
+          if (!checkDomain(run.domains, frame.url || "")) return false;
           if (fuzzy > 1) return frame.url.startsWith(targetUrl.split("?")[0]);
           return frame.url === targetUrl || frame.url.startsWith(targetUrl);
         });
@@ -635,9 +715,10 @@ exports.check = async function(param) {
           const frameHandle = await createHandle(
             info.tabId,
             hit.frameId,
-            info.domains,
+            run.domains,
             hit.url,
-            info.windowId
+            info.windowId,
+            run.rid
           );
           return { handle: frameHandle, url: hit.url };
         }

@@ -12,7 +12,7 @@
 
 原项目基于 `Manifest V2`，当前 Chromium 内核浏览器已不再支持 `Manifest V2`。该仓库在原项目基础上完成 `Manifest V2` → `Manifest V3` 的适配与维护，本项目基于该 fork 继续开发。
 
-## 本仓库（个人自用）
+## 本仓库（个人自用，纯AI修改）
 
 - `skipandgoon/soulsign`：https://github.com/skipandgoon/soulsign
 

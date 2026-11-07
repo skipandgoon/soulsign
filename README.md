@@ -19,6 +19,8 @@
 主要更新事项：
 
 - **2.7.x**：移除对第三方脚本推荐站点的依赖，改为读取自有脚本仓库的 `manifest.json`
+- **2.8.6**
+  - 执行结果单元格支持长文案自动换行，长报错不再把右侧列挤出可视区
 - **2.8.5**
   - 修复 `axios.post(url, new URLSearchParams(...))` 触发 `DataCloneError`：表单参数在沙箱侧先序列化再投递，并补 `application/x-www-form-urlencoded` 头
 - **2.8.4**

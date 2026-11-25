@@ -1111,6 +1111,7 @@ exports.check = async function(param) {
     const originalTask = originalKey ? findTaskByKey(originalKey) : null;
     const previousTask = originalTask || (savedKey ? findTaskByKey(savedKey) : null);
     await send(MESSAGE_PATHS.taskAdd, code);
+    repoSync(code).catch(() => {});
     if (previousTask) {
       await send(MESSAGE_PATHS.taskSet, {
         author: (savedKey || "").split("/")[0] || previousTask.author,
@@ -1171,6 +1172,133 @@ exports.check = async function(param) {
     URL.revokeObjectURL(url);
   }
 
+  // ===== 从链接导入 / 仓库自动同步 =====
+  function b64enc(text) {
+    const bytes = new TextEncoder().encode(text);
+    let bin = "";
+    bytes.forEach((b) => (bin += String.fromCharCode(b)));
+    return btoa(bin);
+  }
+  function b64dec(b64) {
+    const bin = atob(String(b64 || "").replace(/\s/g, ""));
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  }
+  function parseScriptMeta(code) {
+    const m = String(code).match(/==UserScript==([\s\S]*?)==\/UserScript==/);
+    const head = m ? m[1] : "";
+    const get = (k) => {
+      const r = new RegExp("^//\s*@" + k + "\s+(.+)$", "m").exec(head);
+      return r ? r[1].trim() : "";
+    };
+    const domains = [...head.matchAll(/^\/\/\s*@domain\s+(.+)$/gm)].map((x) => x[1].trim());
+    const domain = domains[0] || "";
+    const id = (domain || get("name") || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    return { name: get("name"), version: get("version") || "1.0.0", domain, loginURL: get("loginURL"), expire: Number(get("expire")) || 0, id };
+  }
+
+  async function getRepoSyncConfig() {
+    const { repoSync } = await chrome.storage.local.get("repoSync");
+    return repoSync || null;
+  }
+
+  async function configureRepoSync() {
+    const cur = (await getRepoSyncConfig()) || {};
+    const repo = cur.repo || "skipandgoon/soulsign-scripts";
+    const token = window.prompt("GitHub Token（需要 contents:write 权限；留空=关闭自动同步），仓库：" + repo, "");
+    if (token === null) return;
+    if (!token.trim()) {
+      await chrome.storage.local.set({ repoSync: { ...cur, repo, token: "", enabled: false } });
+      showToast("已关闭仓库自动同步");
+      return;
+    }
+    await chrome.storage.local.set({
+      repoSync: { repo, branch: cur.branch || "main", token: token.trim(), enabled: true },
+    });
+    showToast("仓库同步已开启（token 只存本机）");
+  }
+
+  async function repoSync(code) {
+    const cfg = await getRepoSyncConfig();
+    if (!cfg || !cfg.token || cfg.enabled === false) return;
+    const meta = parseScriptMeta(code);
+    if (!meta.id) return;
+    const api = "https://api.github.com";
+    const headers = { Authorization: "token " + cfg.token, Accept: "application/vnd.github+json" };
+    const branch = cfg.branch || "main";
+    const repo = cfg.repo || "skipandgoon/soulsign-scripts";
+    const getFile = async (path) => {
+      const r = await fetch(`${api}/repos/${repo}/contents/${path}?ref=${branch}`, { headers, cache: "no-store" });
+      if (r.status === 404) return null;
+      if (!r.ok) throw new Error(`GitHub ${r.status}`);
+      return r.json();
+    };
+    const putFile = async (path, text, sha, message) => {
+      const body = { message, content: b64enc(text), branch };
+      if (sha) body.sha = sha;
+      const r = await fetch(`${api}/repos/${repo}/contents/${path}`, {
+        method: "PUT",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error(`GitHub ${r.status}`);
+    };
+    try {
+      const file = `scripts/${meta.id}.js`;
+      const cur = await getFile(file);
+      await putFile(file, code, cur ? cur.sha : null, `feat(${meta.id}): 同步脚本 ${meta.version}`);
+      const mf = await getFile("manifest.json");
+      if (mf) {
+        const data = JSON.parse(b64dec(mf.content));
+        const today = new Date().toISOString().slice(0, 10);
+        const entry = {
+          id: meta.id,
+          name: meta.name,
+          author: "墨墨",
+          version: meta.version,
+          domain: meta.domain,
+          loginURL: meta.loginURL,
+          expire: meta.expire || 900000,
+          file,
+          desc: "",
+          updated: today,
+        };
+        data.scripts = (data.scripts || []).filter((s) => s.id !== meta.id).concat([entry]);
+        data.updated_at = today;
+        await putFile("manifest.json", JSON.stringify(data, null, 2) + String.fromCharCode(10), mf.sha, `chore(manifest): 登记 ${meta.id}`);
+      }
+      showToast(`已同步到仓库：${meta.id}`);
+    } catch (e) {
+      showToast(`仓库同步失败：${e.message}`);
+    }
+  }
+
+  // 把 GitHub 页面地址换成 raw 地址（支持 blob / raw / gist / 普通 raw）
+  function toRawUrl(input) {
+    const url = String(input || "").trim();
+    let m = url.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/(?:blob|raw)\/([^/]+)\/(.+?)(?:[?#].*)?$/);
+    if (m) return `https://raw.githubusercontent.com/${m[1]}/${m[2]}/${m[3]}/${m[4]}`;
+    m = url.match(/^https?:\/\/gist\.github\.com\/([^/]+)\/([a-f0-9]+)(?:[?#].*)?$/i);
+    if (m) return `https://gist.githubusercontent.com/${m[1]}/${m[2]}/raw`;
+    return url;
+  }
+
+  async function importFromUrl() {
+    const url = window.prompt("粘贴脚本 raw 链接（raw.githubusercontent.com/...）", "");
+    if (!url) return;
+    const rawUrl = toRawUrl(url);
+    const r = await fetch(rawUrl, { cache: "no-store" });
+    if (!r.ok) throw new Error(`下载失败 HTTP ${r.status}`);
+    const code = await r.text();
+    if (!/==UserScript==/.test(code)) throw new Error("这不是魂签脚本（缺少 ==UserScript== 头）");
+    await send(MESSAGE_PATHS.taskAdd, code);
+    await refreshViewAfterMutation();
+    showToast("已从链接导入");
+  }
+
   async function importScripts(file) {
     const text = await file.text();
     const parsed = JSON.parse(text);
@@ -1182,6 +1310,7 @@ exports.check = async function(param) {
     }
     for (const task of tasks) {
       await send(MESSAGE_PATHS.taskAdd, task.code || task);
+      repoSync(task.code || task).catch(() => {});
       if (task._params || typeof task.enable === "boolean" || task.ok || task.cnt || task.result) {
         await send(MESSAGE_PATHS.taskSet, {
           author: task.author,
@@ -1275,6 +1404,9 @@ exports.check = async function(param) {
   document.getElementById("add-script").addEventListener("click", () => openEditor("添加脚本", defaultCode));
   document.getElementById("record-script").addEventListener("click", openRecord);
   document.getElementById("import-script").addEventListener("click", () => fileInput.click());
+  document.getElementById("import-url").addEventListener("click", () => {
+    importFromUrl().catch((e) => showToast(e.message || String(e)));
+  });
   bindAsyncClick("export-script", exportScripts);
   bindAsyncClick("clear-count", clearCount);
   // 脚本仓库 / 批量操作 / 拖动排序
